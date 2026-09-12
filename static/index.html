@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>LiftLab</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0d10;color:#f5f5f5;font-family:system-ui,-apple-system,sans-serif}
+main{max-width:760px;margin:auto;padding:14px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+h1{font-size:22px;margin:0}
+.pill{font-size:12px;padding:6px 9px;border:1px solid #333;border-radius:99px}
+.card{background:#14171b;border:1px solid #282c32;border-radius:16px;padding:12px;margin-bottom:12px}
+input[type=file]{width:100%;padding:12px;border-radius:12px;background:#20242a;color:#ddd}
+button{width:100%;padding:13px;border:0;border-radius:12px;background:#fff;color:#111;font-weight:700;margin-top:9px}
+#stage{position:relative;background:#000;border-radius:14px;overflow:hidden}
+video{display:block;width:100%;max-height:70vh;background:#000}
+canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.progress{height:8px;background:#25292e;border-radius:99px;overflow:hidden;margin:10px 0}
+.bar{height:100%;width:0;background:#fff}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.metric{background:#1d2126;border-radius:12px;padding:10px}
+.metric small{display:block;color:#9aa1aa;font-size:11px}
+.metric b{font-size:18px}
+svg{width:100%;height:150px;background:#0e1013;border-radius:12px}
+.muted{color:#9aa1aa;font-size:12px}
+</style>
+</head>
+
+<body>
+<main>
+
+<div class="top">
+<h1>LiftLab</h1>
+<span class="pill">AI Biomechanics</span>
+</div>
+
+<div class="card">
+<input id="file" type="file" accept="video/*">
+<button id="go">영상 분석 시작</button>
+<div class="progress"><div class="bar" id="p"></div></div>
+<div id="status" class="muted">영상을 선택하세요.</div>
+</div>
+
+<div class="card" id="viewer" style="display:none">
+<div id="stage">
+<video id="video" controls playsinline></video>
+<canvas id="canvas"></canvas>
+</div>
+</div>
+
+<div class="card" id="metrics" style="display:none">
+<div class="muted">현재 프레임 관절각</div>
+<div class="grid" id="angles"></div>
+</div>
+
+<div class="card" id="graphs" style="display:none">
+<div class="muted">관절각 변화</div>
+<svg id="angleGraph" viewBox="0 0 600 150" preserveAspectRatio="none"></svg>
+
+<div style="height:10px"></div>
+
+<div class="muted">바벨 Y 궤적</div>
+<svg id="barGraph" viewBox="0 0 600 150" preserveAspectRatio="none"></svg>
+</div>
+
+</main>
+
+<script>
+const fileEl=document.getElementById('file');
+const go=document.getElementById('go');
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+
+let data=null;
+let fps=30;
+
+const connections=[
+['left_shoulder','left_elbow'],
+['left_elbow','left_wrist'],
+['right_shoulder','right_elbow'],
+['right_elbow','right_wrist'],
+['left_shoulder','right_shoulder'],
+['left_hip','right_hip'],
+['left_shoulder','left_hip'],
+['right_shoulder','right_hip'],
+['left_hip','left_knee'],
+['left_knee','left_ankle'],
+['right_hip','right_knee'],
+['right_knee','right_ankle']
+];
+
+function draw(){
+
+ if(!data || !data.frames) return;
+
+ const t=video.currentTime||0;
+
+ const i=Math.min(
+   data.frames.length-1,
+   Math.max(0,Math.round(t*fps))
+ );
+
+ const fr=data.frames[i];
+
+ if(!fr)return;
+
+ canvas.width=video.videoWidth||data.width;
+ canvas.height=video.videoHeight||data.height;
+
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+
+ /* 관절/신체 구간 이동 궤적 */
+ ctx.lineWidth=2;
+ ctx.globalAlpha=.38;
+
+ const segmentNames=Object.keys(fr.segments||{});
+
+ for(const name of segmentNames){
+
+   const pts=[];
+
+   for(let j=0;j<=i;j++){
+
+     const m=data.frames[j].segments?.[name]?.mid;
+
+     if(m)pts.push(m);
+   }
+
+   if(pts.length>1){
+
+     ctx.beginPath();
+     ctx.moveTo(...pts[0]);
+
+     for(const q of pts.slice(1)){
+       ctx.lineTo(...q);
+     }
+
+     ctx.stroke();
+   }
+ }
+
+ ctx.globalAlpha=1;
+
+ /* 바벨 누적 궤적 */
+ const bp=[];
+
+ for(let j=0;j<=i;j++){
+
+   if(data.frames[j].barbell){
+     bp.push(data.frames[j].barbell);
+   }
+ }
+
+ if(bp.length>1){
+
+   ctx.lineWidth=4;
+   ctx.beginPath();
+   ctx.moveTo(...bp[0]);
+
+   for(const q of bp.slice(1)){
+     ctx.lineTo(...q);
+   }
+
+   ctx.stroke();
+ }
+
+ /* 현재 프레임 skeleton */
+ ctx.lineWidth=4;
+
+ for(const [a,b] of connections){
+
+   if(fr.joints[a]&&fr.joints[b]){
+
+     ctx.beginPath();
+     ctx.moveTo(...fr.joints[a]);
+     ctx.lineTo(...fr.joints[b]);
+     ctx.stroke();
+   }
+ }
+
+ /* keypoints */
+ for(const p of Object.values(fr.joints||{})){
+
+   ctx.beginPath();
+   ctx.arc(p[0],p[1],5,0,Math.PI*2);
+   ctx.fill();
+ }
+
+ /* 현재 바벨 */
+ if(fr.barbell){
+
+   ctx.beginPath();
+   ctx.arc(
+     fr.barbell[0],
+     fr.barbell[1],
+     9,
+     0,
+     Math.PI*2
+   );
+
+   ctx.stroke();
+ }
+
+ renderAngles(fr.angles||{});
+}
+
+function renderAngles(a){
+
+ const el=document.getElementById('angles');
+
+ const keys=[
+   'left_knee',
+   'right_knee',
+   'left_hip',
+   'right_hip',
+   'left_elbow',
+   'right_elbow',
+   'left_shoulder',
+   'right_shoulder'
+ ];
+
+ el.innerHTML=keys.map(k=>`
+   <div class="metric">
+     <small>${k}</small>
+     <b>${a[k]??'—'}°</b>
+   </div>
+ `).join('');
+}
+
+function path(values,w=600,h=150){
+
+ const valid=values
+   .map((v,i)=>[i,v])
+   .filter(x=>Number.isFinite(x[1]));
+
+ if(!valid.length)return '';
+
+ const mn=Math.min(...valid.map(x=>x[1]));
+ const mx=Math.max(...valid.map(x=>x[1]));
+
+ return valid.map(([i,v],n)=>{
+
+   const y=
+     h-
+     ((v-mn)/Math.max(mx-mn,1))*
+     (h-10)-5;
+
+   return `${n?'L':'M'} ${(i/(values.length-1))*w} ${y}`;
+
+ }).join(' ');
+}
+
+function drawGraphs(){
+
+ if(!data||!data.frames)return;
+
+ const avgHip=data.frames.map(f=>{
+
+   const x=[
+     f.angles?.left_hip,
+     f.angles?.right_hip
+   ].filter(Number.isFinite);
+
+   return x.length?
+     x.reduce((a,b)=>a+b,0)/x.length:
+     null;
+ });
+
+ const by=data.frames.map(
+   f=>f.barbell?.[1]??null
+ );
+
+ document.getElementById('angleGraph').innerHTML=
+   `<path d="${path(avgHip)}"
+      fill="none"
+      stroke="white"
+      stroke-width="3"/>`;
+
+ document.getElementById('barGraph').innerHTML=
+   `<path d="${path(by)}"
+      fill="none"
+      stroke="white"
+      stroke-width="3"/>`;
+}
+
+video.addEventListener('timeupdate',draw);
+video.addEventListener('loadedmetadata',draw);
+
+go.onclick=async()=>{
+
+ const file=fileEl.files[0];
+
+ if(!file){
+   alert('영상을 선택하세요.');
+   return;
+ }
+
+ const fd=new FormData();
+ fd.append('file',file);
+
+ document.getElementById('status').textContent=
+   '서버로 영상 업로드 중...';
+
+ try{
+
+   const r=await fetch(
+     '/api/analyze',
+     {
+       method:'POST',
+       body:fd
+     }
+   );
+
+   if(!r.ok){
+
+     document.getElementById('status').textContent=
+       '업로드 실패';
+
+     return;
+   }
+
+   const result=await r.json();
+   const job_id=result.job_id;
+
+   const timer=setInterval(async()=>{
+
+     try{
+
+       const sr=await fetch(
+         '/api/status/'+job_id
+       );
+
+       const s=await sr.json();
+
+       document.getElementById('p').style.width=
+         (s.progress||0)+'%';
+
+       document.getElementById('status').textContent=
+         s.message||s.status;
+
+       if(s.status==='done'){
+
+         clearInterval(timer);
+
+         const rr=await fetch(
+           '/api/result/'+job_id
+         );
+
+         data=await rr.json();
+
+         fps=data.fps||30;
+
+         video.src=URL.createObjectURL(file);
+
+         document.getElementById('viewer').style.display='block';
+         document.getElementById('metrics').style.display='block';
+         document.getElementById('graphs').style.display='block';
+
+         drawGraphs();
+         draw();
+       }
+
+       if(s.status==='error'){
+
+         clearInterval(timer);
+
+         document.getElementById('status').textContent=
+           '분석 오류: '+s.message;
+       }
+
+     }catch(e){
+
+       clearInterval(timer);
+
+       document.getElementById('status').textContent=
+         '상태 확인 오류';
+     }
+
+   },1000);
+
+ }catch(e){
+
+   document.getElementById('status').textContent=
+     '서버 연결 오류';
+ }
+};
+</script>
+
+</body>
+</html>
